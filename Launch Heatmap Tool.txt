@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>PDF Word Heatmap with Exclusions</title>
+
+  <!-- PDF.js library to read PDF files and extract text -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.4.120/pdf.min.js"></script>
+
+  <!-- p5.js library for drawing the interactive heatmap -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.6.0/p5.min.js"></script>
+
+  <style>
+    /* General styling for the body */
+    body {
+      font-family: sans-serif;
+      margin: 1em;
+      background-color: #fff;
+      color: #333;
+    }
+
+    /* Canvas styling for the heatmap visualization */
+    canvas {
+      border: 1px solid #ccc;
+    }
+
+    /* Styling for the exclusion controls */
+    #excludeControls {
+      margin-top: 1em;
+      display: none; /* hidden initially, shown after PDF upload */
+    }
+
+    /* Styling for the exclusion input field */
+    #excludeInput {
+      width: 400px;
+      padding: 4px;
+    }
+
+    /* Tooltip container (informational 'i' icon and clickable link) */
+    .tooltip {
+      display: inline-block;
+      position: relative;
+      cursor: pointer;
+      margin-left: 8px;
+      color: #555;
+      font-size: 16px;
+    }
+
+    /* Tooltip text styling */
+    .tooltip a {
+      color: #00f;
+      text-decoration: underline;
+      cursor: pointer;
+    }
+
+    /* Popup overlay covering entire screen when active */
+    .popup-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background: rgba(0,0,0,0.6); /* dark translucent background */
+      display: none; /* initially hidden, shown on click */
+      justify-content: center;
+      align-items: center;
+      z-index: 2000; /* above all other elements */
+    }
+
+    /* Popup content box */
+    .popup-content {
+      background: #fff;
+      padding: 20px;
+      border-radius: 6px;
+      width: 80%;
+      max-width: 600px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.4);
+      text-align: left;
+    }
+
+    /* Popup header styling */
+    .popup-content h3 {
+      margin-top: 0;
+    }
+
+    /* Close button styling within popup */
+    .popup-content button {
+      margin-top: 20px;
+      padding: 6px 14px;
+      cursor: pointer;
+    }
+
+      /* Scrollable area for long lists of words inside popup */
+      #allExcludedWordsList {
+        max-height: 300px;
+        overflow-y: auto;
+        margin-top: 10px;
+        padding: 8px;
+        border: 1px solid #ccc;
+        border-radius: 4px;
+        background: #f9f9f9;
+      }
+
+      /* Color legend styling for heatmap */
+      #legendCanvas {
+        width: 100%;
+        max-width: 800px;
+        margin-top: 10px;
+        border: none;
+      }
+
+    </style>
+  </head>
+
+  <body>
+    <!-- Main header for the page -->
+    <h2>Heatmap</h2>
+
+    <!-- PDF file upload input -->
+    <input type="file" id="pdfUpload" accept="application/pdf" />
+
+    <!-- Controls for excluding words from the heatmap -->
+    <div id="excludeControls">
+      <label for="excludeInput">Exclude words (separate with a comma like: a, and, but):</label><br>
+      <input type="text" id="excludeInput" placeholder="e.g., monitor, compliance, facility" />
+      <button id="regenHeatmap">Regenerate Heatmap</button>
+      
+      <!-- Tooltip linking to popup with full excluded words list -->
+      <span class="tooltip" id="excludedWordsTooltip">
+        Many common words excluded. <a href="#" id="showAllExcluded">Click here to view all.</a>
+      </span>
+    </div>
+
+    <!-- Popup for displaying the full excluded words list -->
+    <div id="excludedPopup" class="popup-overlay">
+      <div class="popup-content">
+        <h3>All Excluded Words</h3>
+        <div id="allExcludedWordsList"></div>
+        <button id="closePopup">Close</button>
+      </div>
+    </div>
+
+    <!-- Guide and legend explaining heatmap colors -->
+    <div id="guide" style="margin-top: 20px; max-width: 1000px; margin-left: auto; margin-right: auto;">
+      <h3>Word Frequency Guide</h3>
+      <canvas id="legendCanvas"></canvas>
+      <p style="max-width: 600px;">
+        Words appearing more frequently in the document are displayed in <strong>larger</strong> font and a hue that is more red. Less frequent words appear smaller and in a more blue hue. The top 5 words have a black outline.
+      </p>
+    </div>
+
+    <script>
+      // JavaScript begins here
+
+  // Define all words that will always be excluded from the heatmap
+  const predefinedStopWords = [
+    'the','and','you','that','was','for','are','with','his','they','this','have','from','not','but','had','she','which','were','her',
+    'there','been','has','their','would','what','will','about','could','into','than','them','then','when','who','out','some','over',
+    'more','only','like','also','just','other','such','each','very','those','shall','upon','your','its','our','may','might','must',
+    'while','because','should','through','where','any','how','been','did','does','him','hers','off','on','in','at','as','by','of',
+    'an','a','to','is','it','be','or','we','i','me','my','these','its','all','use','pgs','months','days','total','one','two',
+    'three','four','five','six','seven','eight','nine','ten','first','second','third','fourth','fifth','sixth','seventh',
+    'eighth','ninth','tenth','january','february','march','april','may','june','july','august','september','october',
+    'november','december','department','monitoring','team','case','report','monitor','force','filed','cases','document', 
+    'page','dkt','number','period','lts','time','court','action','order','can','in','out','over','under','within','without',
+    'above','below','hours','hour','see','saw','current','prior','previous','day','days','whether','provide','since','during','both'
+  ];
+
+  // HTML element references
+  const pdfUpload = document.getElementById('pdfUpload');
+  const excludeInput = document.getElementById('excludeInput');
+  const excludeControls = document.getElementById('excludeControls');
+  const regenButton = document.getElementById('regenHeatmap');
+  const showAllExcluded = document.getElementById('showAllExcluded');
+  const excludedPopup = document.getElementById('excludedPopup');
+  const closePopup = document.getElementById('closePopup');
+  const allExcludedWordsList = document.getElementById('allExcludedWordsList');
+
+  // Variables to store PDF text and word counts
+  let fullText = '';
+  let wordCounts = {};
+  let sortedWords = [];
+  let currentExcludes = [];
+
+  // Load and read PDF content
+  pdfUpload.addEventListener('change', (e) => {
+    const file = e.target.files[0];
+    if (file && file.type === 'application/pdf') {
+      const reader = new FileReader();
+      reader.onload = function () {
+        const typedarray = new Uint8Array(this.result);
+        pdfjsLib.getDocument({ data: typedarray }).promise.then(async (pdf) => {
+          fullText = '';
+          for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+            const page = await pdf.getPage(pageNum);
+            const textContent = await page.getTextContent();
+            const strings = textContent.items.map(item => item.str);
+            fullText += strings.join(' ') + ' ';
+          }
+
+          currentExcludes = [];
+          excludeInput.value = '';
+          wordCounts = getWordCounts(fullText);
+          excludeControls.style.display = 'block';
+          updateExcludedWordsPopup();
+          redrawSketch();
+        });
+      };
+      reader.readAsArrayBuffer(file);
+    }
+  });
+
+  // Regenerate heatmap when user clicks button
+  regenButton.addEventListener('click', () => {
+    currentExcludes = excludeInput.value
+      .toLowerCase()
+      .split(',')
+      .map(w => w.trim())
+      .filter(w => w.length > 0);
+
+    wordCounts = getWordCounts(fullText, currentExcludes);
+    updateExcludedWordsPopup();
+    redrawSketch();
+  });
+
+  // Generate word frequency counts, respecting excluded words
+  function getWordCounts(text, customExcludes = []) {
+    const stopWords = new Set(predefinedStopWords);
+    customExcludes.forEach(w => stopWords.add(w));
+
+    const words = text.toLowerCase().match(/\b[a-z]{3,}\b/g) || [];
+    const counts = {};
+    for (const word of words) {
+      if (!stopWords.has(word)) {
+        counts[word] = (counts[word] || 0) + 1;
+      }
+    }
+    return counts;
+  }
+
+  // Update list of all excluded words shown in popup
+  function updateExcludedWordsPopup() {
+    const allExcludes = new Set([...predefinedStopWords, ...currentExcludes]);
+    const sortedExcludes = Array.from(allExcludes).sort();
+    allExcludedWordsList.innerHTML = sortedExcludes.join(', ');
+  }
+
+  // Popup open/close logic
+  showAllExcluded.addEventListener('click', (e) => {
+    e.preventDefault();
+    updateExcludedWordsPopup();
+    excludedPopup.style.display = 'flex';
+  });
+
+  closePopup.addEventListener('click', () => {
+    excludedPopup.style.display = 'none';
+  });
+
+  // Prepare sorted words for heatmap
+  function redrawSketch() {
+    sortedWords = Object.entries(wordCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 100);
+    redraw();
+  }
+
+  // Setup p5.js canvas
+  function setup() {
+    createCanvas(windowWidth, windowHeight * 0.75);
+    textFont('Arial');
+    noLoop();
+  }
+
+  // Resize canvas dynamically on window resize
+  function windowResized() {
+    resizeCanvas(windowWidth, windowHeight * 0.75);
+    redrawSketch();
+  }
+
+  // Draw the heatmap visualization
+  function draw() {
+    background(255);
+    textAlign(LEFT, BASELINE);
+
+    if (!sortedWords.length) {
+      fill(0);
+      textSize(16);
+      text("Upload a PDF to generate heatmap", 20, 50);
+      return;
+    }
+
+    let x = 20, y = 50;
+    const max = sortedWords[0][1];
+    const min = sortedWords[sortedWords.length - 1][1];
+    const top5 = sortedWords.slice(0, 5).map(([word]) => word);
+
+    sortedWords.forEach(([word, count]) => {
+      const size = map(count, min, max, 14, 72);
+      const heat = map(count, min, max, 0, 1);
+      fill(lerp(80,255,heat), lerp(160,60,heat), lerp(255,60,heat));
+      stroke(top5.includes(word) ? 0 : 'transparent');
+      strokeWeight(top5.includes(word) ? 1.2 : 0);
+
+      textSize(size);
+      text(word, x, y);
+
+      let totalWidth = textWidth(word);
+      if (top5.includes(word)) {
+        noStroke();
+        fill(0);
+        textSize(14);
+        const label = `(${count})`;
+        text(label, x + totalWidth + 6, y);
+        totalWidth += textWidth(label) + 6;
+      }
+
+      x += totalWidth + 15;
+      if (x > width - 200) {
+        x = 20; 
+        y += size + 15;
+      }
+    });
+
+    drawWordStatsBoxPlot(40, height - 100, width - 80, 30);
+  }
+
+  // Draw statistical boxplot showing min, max, avg word frequencies
+  function drawWordStatsBoxPlot(x, y, w, h) {
+    const freqs = sortedWords.map(([, count]) => count).sort((a, b) => a - b);
+    if (freqs.length < 5) return;
+
+    const q1 = freqs[Math.floor(freqs.length * 0.25)];
+    const q2 = freqs[Math.floor(freqs.length * 0.5)];
+    const q3 = freqs[Math.floor(freqs.length * 0.75)];
+    const min = freqs[0];
+    const max = freqs[freqs.length - 1];
+    const avg = freqs.reduce((a, b) => a + b, 0) / freqs.length;
+
+    stroke(100);
+    line(x, y + h / 2, x + w, y + h / 2);
+    line(x, y + h / 2 - 5, x, y + h / 2 + 5);
+    line(x + w, y + h / 2 - 5, x + w, y + h / 2 + 5);
+
+    const scale = (val) => map(val, min, max, x, x + w);
+
+    noStroke();
+    fill(200);
+    rect(scale(q1), y, scale(q3) - scale(q1), h);
+
+    stroke(0);
+    line(scale(q2), y, scale(q2), y + h);
+
+    fill(255, 0, 0);
+    ellipse(scale(avg), y + h / 2, 8);
+
+    noStroke();
+    fill(50);
+    textSize(12);
+    textAlign(CENTER);
+    text(`min: ${min}`, scale(min), y + h + 15);
+    text(`avg: ${avg.toFixed(1)}`, scale(avg), y + h + 30);
+    text(`max: ${max}`, scale(max), y + h + 15);
+  }
+
+  // Draw color legend explaining heatmap colors
+  function drawLegend() {
+    const c = document.getElementById('legendCanvas');
+    const ctx = c.getContext('2d');
+
+    const legendHeight = Math.floor(window.innerHeight * 0.20);
+    c.width = window.innerWidth;
+    c.height = legendHeight;
+
+    ctx.clearRect(0, 0, c.width, c.height);
+
+    const barTop = legendHeight * 0.2;
+    const barHeight = legendHeight * 0.3;
+    const barBottom = barTop + barHeight;
+
+    for (let i = 0; i <= c.width; i++) {
+      const t = i / c.width;
+      const r = lerp(80, 255, t);
+      const g = lerp(160, 60, t);
+      const b = lerp(255, 60, t);
+      ctx.strokeStyle = `rgb(${r}, ${g}, ${b})`;
+      ctx.beginPath();
+      ctx.moveTo(i, barTop);
+      ctx.lineTo(i, barBottom);
+      ctx.stroke();
+    }
+
+    ctx.font = `${legendHeight * 0.2}px sans-serif`;
+    ctx.fillStyle = "#333";
+    ctx.textAlign = "left";
+    ctx.textBaseline = "top";
+    ctx.fillText("Low Frequency", 10, barBottom + 8);
+
+    ctx.textAlign = "right";
+    ctx.fillText("High Frequency", c.width - 10, barBottom + 8);
+
+    ctx.textAlign = "left";
+    ctx.textBaseline = "bottom";
+    ctx.font = `${legendHeight * 0.15}px sans-serif`;
+    ctx.fillStyle = "gray";
+    ctx.fillText("small", 10, barBottom);
+
+    ctx.textAlign = "right";
+    ctx.font = `${legendHeight * 0.5}px sans-serif`;
+    ctx.fillText("BIG", c.width - 10, barBottom);
+  }
+
+  window.onload = drawLegend;
+  window.addEventListener("resize", drawLegend);
+
+</script>
+</body>
+</html>
